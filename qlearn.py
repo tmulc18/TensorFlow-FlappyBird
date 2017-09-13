@@ -30,7 +30,7 @@ GAME = 'bird' # the name of the game being played for log files
 CONFIG = 'nothreshold'
 ACTIONS = 2 # number of valid actions
 GAMMA = 0.99 # decay rate of past observations
-OBSERVATION = 3200. # timesteps to observe before training
+OBSERVATION = 32. # timesteps to observe before training
 EXPLORE = 3000000. # frames over which to anneal epsilon
 FINAL_EPSILON = 0.0001 # final value of epsilon
 INITIAL_EPSILON = 0.1 # starting value of epsilon
@@ -38,33 +38,13 @@ REPLAY_MEMORY = 50000 # number of previous transitions to remember
 BATCH = 32 # size of minibatch
 FRAME_PER_ACTION = 1
 LEARNING_RATE = 1e-4
+CONTINUE_TRAIN = False
 
 img_rows , img_cols = 80, 80
 #Convert image into Black and white
 img_channels = 4 #We stack 4 frames
 
-def buildmodel():
-    print("Now we build the model")
-    model = Sequential()
-    model.add(Convolution2D(32, 8, 8, subsample=(4, 4), border_mode='same',input_shape=(img_rows,img_cols,img_channels)))  #80*80*4
-    model.add(Activation('relu'))
-    model.add(Convolution2D(64, 4, 4, subsample=(2, 2), border_mode='same'))
-    model.add(Activation('relu'))
-    model.add(Convolution2D(64, 3, 3, subsample=(1, 1), border_mode='same'))
-    model.add(Activation('relu'))
-    model.add(Flatten())
-    model.add(Dense(512))
-    model.add(Activation('relu'))
-    model.add(Dense(2))
-   
-    adam = Adam(lr=LEARNING_RATE)
-    model.compile(loss='mse',optimizer=adam)
-    print("We finish building the model")
-    return model
-
 def tf_buildmodel(x,reuse=None):
-    # tf_s_t = tf.placeholder(dtype=tf.float32,shape=(1, s_t.shape[0], s_t.shape[1], s_t.shape[2])) #1*80*80*4
-    # x = tf_s_t
     x = tf.nn.relu(conv2D(x,shape=[8,8,32],name='1',stride=[1,4,4,1],reuse=reuse))
     x = tf.nn.relu(conv2D(x,shape=[64,4,4],name='2',stride=[1,2,2,1],reuse=reuse))
     x = tf.nn.relu(conv2D(x,shape=[64,3,3],name='3',stride=[1,1,1,1],reuse=reuse))
@@ -80,6 +60,7 @@ def trainNetwork(model,args):
 
     # store the previous observations in replay memory
     D = deque()
+    # TODO: implement queu in TF
 
     # get the first state by doing nothing and preprocess the image to 80x80x4
     do_nothing = np.zeros(ACTIONS)
@@ -112,23 +93,30 @@ def trainNetwork(model,args):
         epsilon = INITIAL_EPSILON
 
     #TF code
+    #(s,a)
     image_input = tf.placeholder(dtype=tf.float32,shape=(None, 80, 80, 4)) #1*80*80*4 #$$$
     Q_model = tf_buildmodel(image_input,reuse=None) #$$$
 
-    image_input2 = tf.placeholder(dtype=tf.float32,shape=(None, 80, 80, 4))
-    Q_model2 = tf_buildmodel(image_input2,reuse=True)
+    #(s',a')
+    # image_input2 = tf.placeholder(dtype=tf.float32,shape=(None, 80, 80, 4))
+    # Q_model2 = tf_buildmodel(image_input2,reuse=True)
 
     tf_targets = tf.placeholder(dtype=tf.float32,shape=(BATCH,ACTIONS))
-    # tf_inputs = tf.placeholder(dtype=tf.float32,shape=(BATCH, 80, 80, 4))
-    tf_loss = tf.reduce_mean(tf.squared_difference(Q_model, tf_targets))
+    # TODO: zero out the loss for the action that isn't picked? 
+    tf_actions = tf.placeholder(dtype=tf.float32,shape=(BATCH,ACTIONS))
+    tf_loss = tf.reduce_mean(tf.squared_difference(Q_model*tf_actions, tf_targets))
     tf_opt = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(tf_loss)
-    init = tf.global_variables_initializer() #$$$
-    sess = tf.Session() #$$$
-    sess.run(init) #$$$
+    init = tf.global_variables_initializer()
+
+    saver = tf.train.Saver()
+
+    sess = tf.Session()
+    if args['mode'] == 'Run' or CONTINUE_TRAIN == True:
+        saver.restore(sess,'logdir/model')
+    sess.run(init)
 
     t = 0
     while (True):
-        _tf_loss = 0
         loss = 0
         Q_sa = 0
         action_index = 0
@@ -141,12 +129,10 @@ def trainNetwork(model,args):
                 action_index = random.randrange(ACTIONS)
                 a_t[action_index] = 1
             else:
-                #q = model.predict(s_t)       #input a stack of 4 images, get the prediction
-                tf_q = sess.run([Q_model],feed_dict = {image_input : s_t}) #$$$$$
-                #max_Q = np.argmax(q)
-                tf_max_Q = np.argmax(tf_q) #$$$
-                action_index = tf_max_Q#max_Q
-                a_t[tf_max_Q] = 1
+                q = sess.run([Q_model],feed_dict = {image_input : s_t}) ##input a stack of 4 images, get the prediction
+                max_Q = np.argmax(q)
+                action_index = max_Q
+                a_t[action_index] = 1
 
         #We reduced the epsilon gradually
         if epsilon > FINAL_EPSILON and t > OBSERVE:
@@ -154,6 +140,13 @@ def trainNetwork(model,args):
 
         #run the selected action and observed next state and reward
         x_t1_colored, r_t, terminal = game_state.frame_step(a_t)
+
+        # TODO implement below x_t1 transformations in TF
+        #tf.placeholder()
+        #tf.expand_dims(,axis=0)
+        #tf.image.rgb_to_grayscale()
+        #tf.image.resize_images() #maybe crop here instead
+        ##tf.image.resize_image_with_crop_or_pad()
 
         x_t1 = skimage.color.rgb2gray(x_t1_colored)
         x_t1 = skimage.transform.resize(x_t1,(80,80))
@@ -172,12 +165,19 @@ def trainNetwork(model,args):
             #sample a minibatch to train on
             minibatch = random.sample(D, BATCH)
 
-
-
             inputs = np.zeros((BATCH, s_t.shape[1], s_t.shape[2], s_t.shape[3]))   #32, 80, 80, 4
             targets = np.zeros((inputs.shape[0], ACTIONS))                         #32, 2
 
             #Now we do the experience replay
+            #process entire minibatch at once for (s',a')
+            state_t1 = np.zeros((BATCH, s_t.shape[1], s_t.shape[2], s_t.shape[3]))   #32, 80, 80, 4
+            minibatch = np.array(minibatch)
+            state_t1 = np.vstack(minibatch[:,3])
+
+            Q_sa_prime = sess.run(Q_model,feed_dict = {image_input : state_t1})
+            action_array_t = np.zeros((BATCH,ACTIONS))
+
+            #fill in the rest of the targets for the chosen action at time t (s,a)
             for i in range(0, len(minibatch)):
                 state_t = minibatch[i][0]
                 action_t = minibatch[i][1]   #This is action index
@@ -191,29 +191,31 @@ def trainNetwork(model,args):
                 #targets[i] = model.predict(state_t)  # Hitting each buttom probability
                 #Q_sa = model.predict(state_t1)
 
-                targets[i],tf_Q_sa = sess.run([Q_model,Q_model2],feed_dict = {image_input : state_t,image_input2 : state_t1}) #$$$
-                # tf_Q_sa = sess.run(Q_model,feed_dict = {image_input : state_t1}) #$$$
+                # TODO: Why is targets being assigned here?
+                # targets[i],Q_sa = sess.run([Q_model,Q_model],
+                #                     feed_dict = {image_input : state_t,image_input : state_t1}) #$$$
 
                 if terminal:
                     targets[i, action_t] = reward_t
                 else:
-                    targets[i, action_t] = reward_t + GAMMA * np.max(tf_Q_sa)
+                    targets[i, action_t] = reward_t + GAMMA * np.max(Q_sa_prime[i])
+
+                #set action
+                action_array_t[i,action_t] = 1
 
             # targets2 = normalize(targets)
             #loss += model.train_on_batch(inputs, targets)
-            sess.run(tf_opt,feed_dict = {image_input : inputs, tf_targets : targets})
-            _tf_loss += sess.run(tf_loss,feed_dict = {image_input : inputs, tf_targets : targets})
+            sess.run(tf_opt,feed_dict = {image_input : inputs, tf_targets : targets, tf_actions : action_array_t})
+            #loss += sess.run(tf_loss,feed_dict = {image_input : inputs, tf_targets : targets})
 
 
         s_t = s_t1
         t = t + 1
 
         # save progress every 10000 iterations
-        if t % 10000 == 0:
+        if t % 1000 == 0:
             print("Now we save model")
-            # model.save_weights("model2.h5", overwrite=True)
-            # with open("model2.json", "w") as outfile:
-            #     json.dump(model.to_json(), outfile)
+            saver.save(sess, 'logdir/model') 
 
         # print info
         state = ""
@@ -226,13 +228,12 @@ def trainNetwork(model,args):
 
         print("TIMESTEP", t, "/ STATE", state, \
             "/ EPSILON", epsilon, "/ ACTION", action_index, "/ REWARD", r_t, \
-            "/ Q_MAX " , np.max(Q_sa), "/ Loss ", loss, "/ TF loss",_tf_loss)
+            "/ Q_MAX " , np.max(Q_sa), "/ Loss ", loss)
 
     print("Episode finished!")
     print("************************")
 
 def playGame(args):
-    #model = buildmodel()
     model = None #$$$
     trainNetwork(model,args)
 
@@ -246,7 +247,4 @@ if __name__ == "__main__":
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
     sess = tf.Session(config=config)
-    from keras import backend as K
-    K.set_image_dim_ordering('tf')
-    K.set_session(sess)
     main()
