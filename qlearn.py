@@ -14,15 +14,9 @@ import numpy as np
 from collections import deque
 
 import json
-from keras import initializers
-from keras.initializers import normal, identity
-from keras.models import model_from_json
-from keras.models import Sequential
-from keras.layers.core import Dense, Dropout, Activation, Flatten
-from keras.layers.convolutional import Convolution2D, MaxPooling2D
-from keras.optimizers import SGD , Adam
+
 import tensorflow as tf
-from keras import backend as K
+
 
 from ops import conv2D, dense
 
@@ -30,7 +24,7 @@ GAME = 'bird' # the name of the game being played for log files
 CONFIG = 'nothreshold'
 ACTIONS = 2 # number of valid actions
 GAMMA = 0.99 # decay rate of past observations
-OBSERVATION = 32. # timesteps to observe before training
+OBSERVATION = 3200. # timesteps to observe before training
 EXPLORE = 3000000. # frames over which to anneal epsilon
 FINAL_EPSILON = 0.0001 # final value of epsilon
 INITIAL_EPSILON = 0.1 # starting value of epsilon
@@ -60,7 +54,7 @@ def trainNetwork(model,args):
 
     # store the previous observations in replay memory
     D = deque()
-    # TODO: implement queu in TF
+    # TODO: implement queue in TF
 
     # get the first state by doing nothing and preprocess the image to 80x80x4
     do_nothing = np.zeros(ACTIONS)
@@ -92,28 +86,39 @@ def trainNetwork(model,args):
         OBSERVE = OBSERVATION
         epsilon = INITIAL_EPSILON
 
-    #TF code
     #(s,a)
-    image_input = tf.placeholder(dtype=tf.float32,shape=(None, 80, 80, 4)) #1*80*80*4 #$$$
+    image_input = tf.placeholder(dtype=tf.float32,shape=(None, 80, 80, 4)) #1*80*80*4
     Q_model = tf_buildmodel(image_input,reuse=None) #$$$
 
-    #(s',a')
-    # image_input2 = tf.placeholder(dtype=tf.float32,shape=(None, 80, 80, 4))
-    # Q_model2 = tf_buildmodel(image_input2,reuse=True)
-
+    global_step = tf.Variable(0.,trainable=False)
     tf_targets = tf.placeholder(dtype=tf.float32,shape=(BATCH,ACTIONS))
     # TODO: zero out the loss for the action that isn't picked? 
     tf_actions = tf.placeholder(dtype=tf.float32,shape=(BATCH,ACTIONS))
     tf_loss = tf.reduce_mean(tf.squared_difference(Q_model*tf_actions, tf_targets))
-    tf_opt = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(tf_loss)
+    tf_opt = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(tf_loss,global_step=global_step)
+
+    #summaries
+    Q_sa_max = tf.reduce_mean(tf.reduce_max(Q_model,axis=1))
+
+    Q_summary = tf.summary.scalar('Q',Q_sa_max)
+    loss_summary = tf.summary.scalar('Loss',tf_loss)
+    merged = tf.summary.merge_all()
+
+    #writer for summary
+    writer = tf.summary.FileWriter('logdir/',tf.get_default_graph())
+
+    #init ops
     init = tf.global_variables_initializer()
 
+    #save model
     saver = tf.train.Saver()
 
+    #session
     sess = tf.Session()
     if args['mode'] == 'Run' or CONTINUE_TRAIN == True:
         saver.restore(sess,'logdir/model')
     sess.run(init)
+
 
     t = 0
     while (True):
@@ -206,6 +211,10 @@ def trainNetwork(model,args):
             # targets2 = normalize(targets)
             #loss += model.train_on_batch(inputs, targets)
             sess.run(tf_opt,feed_dict = {image_input : inputs, tf_targets : targets, tf_actions : action_array_t})
+
+            if t % 500 == 0:
+                summary,gs = sess.run([merged,global_step],feed_dict = {image_input : inputs, tf_targets : targets, tf_actions : action_array_t})
+                writer.add_summary(summary,gs)
             #loss += sess.run(tf_loss,feed_dict = {image_input : inputs, tf_targets : targets})
 
 
@@ -245,6 +254,6 @@ def main():
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
-    config.gpu_options.allow_growth = True
+    #config.gpu_options.allow_growth = False
     sess = tf.Session(config=config)
     main()
