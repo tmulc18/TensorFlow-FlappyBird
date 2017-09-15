@@ -25,14 +25,14 @@ CONFIG = 'nothreshold'
 ACTIONS = 2 # number of valid actions
 GAMMA = 0.99 # decay rate of past observations
 OBSERVATION = 3200. # timesteps to observe before training
-EXPLORE = 3000000. # frames over which to anneal epsilon
+EXPLORE = 1000000. # frames over which to anneal epsilon
 FINAL_EPSILON = 0.0001 # final value of epsilon
-INITIAL_EPSILON = 0.1 # starting value of epsilon
+INITIAL_EPSILON = 0.9 # starting value of epsilon
 REPLAY_MEMORY = 50000 # number of previous transitions to remember
 BATCH = 32 # size of minibatch
 FRAME_PER_ACTION = 1
 LEARNING_RATE = 1e-4
-CONTINUE_TRAIN = False
+CONTINUE_TRAIN = True
 
 img_rows , img_cols = 80, 80
 #Convert image into Black and white
@@ -54,6 +54,7 @@ def trainNetwork(model,args):
 
     # store the previous observations in replay memory
     D = deque()
+    # TODO: limit size of D
     # TODO: implement queue in TF
 
     # get the first state by doing nothing and preprocess the image to 80x80x4
@@ -76,12 +77,12 @@ def trainNetwork(model,args):
 
     if args['mode'] == 'Run':
         OBSERVE = 999999999    #We keep observe, never train
-        epsilon = FINAL_EPSILON
+        epsilon = 0
         print ("Now we load weight")
-        model.load_weights("model2.h5")
-        adam = Adam(lr=LEARNING_RATE)
-        model.compile(loss='mse',optimizer=adam)
-        print ("Weight load successfully")    
+        # model.load_weights("model2.h5")
+        # adam = Adam(lr=LEARNING_RATE)
+        # model.compile(loss='mse',optimizer=adam)
+            
     else:                       #We go to training mode
         OBSERVE = OBSERVATION
         epsilon = INITIAL_EPSILON
@@ -92,7 +93,6 @@ def trainNetwork(model,args):
 
     global_step = tf.Variable(0.,trainable=False)
     tf_targets = tf.placeholder(dtype=tf.float32,shape=(BATCH,ACTIONS))
-    # TODO: zero out the loss for the action that isn't picked? 
     tf_actions = tf.placeholder(dtype=tf.float32,shape=(BATCH,ACTIONS))
     tf_loss = tf.reduce_mean(tf.squared_difference(Q_model*tf_actions, tf_targets))
     tf_opt = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(tf_loss,global_step=global_step)
@@ -115,20 +115,27 @@ def trainNetwork(model,args):
 
     #session
     sess = tf.Session()
+    sess.run(init)
     if args['mode'] == 'Run' or CONTINUE_TRAIN == True:
         saver.restore(sess,'logdir/model')
-    sess.run(init)
+        print ("Weight load successfully")
+    
 
 
     t = 0
     while (True):
+        #We reduced the epsilon gradually
+        if not args['mode'] == 'Run':
+            if epsilon > FINAL_EPSILON and t > OBSERVE:
+                epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / EXPLORE
+
         loss = 0
         Q_sa = 0
-        action_index = 0
+        action_index = 0 # TODO: is this needed?
         r_t = 0
-        a_t = np.zeros([ACTIONS])
         #choose an action epsilon greedy
         if t % FRAME_PER_ACTION == 0:
+            a_t = np.zeros([ACTIONS])
             if random.random() <= epsilon:
                 print("----------Random Action----------")
                 action_index = random.randrange(ACTIONS)
@@ -139,9 +146,6 @@ def trainNetwork(model,args):
                 action_index = max_Q
                 a_t[action_index] = 1
 
-        #We reduced the epsilon gradually
-        if epsilon > FINAL_EPSILON and t > OBSERVE:
-            epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / EXPLORE
 
         #run the selected action and observed next state and reward
         x_t1_colored, r_t, terminal = game_state.frame_step(a_t)
@@ -222,7 +226,7 @@ def trainNetwork(model,args):
         t = t + 1
 
         # save progress every 10000 iterations
-        if t % 1000 == 0:
+        if t % 10000 == 0:
             print("Now we save model")
             saver.save(sess, 'logdir/model') 
 
